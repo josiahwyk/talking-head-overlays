@@ -33,7 +33,7 @@ Requirements: macOS or Linux, Python 3.9+, ffmpeg.
 
 ```bash
 brew install ffmpeg                       # or your package manager
-git clone https://github.com/<you>/talking-head-overlays ~/.claude/skills/talking-head-overlays
+git clone https://github.com/<owner>/talking-head-overlays ~/.claude/skills/talking-head-overlays
 pip install -r ~/.claude/skills/talking-head-overlays/requirements.txt
 ```
 
@@ -81,4 +81,4 @@ Open or create a project first (Project Manager's *Import Project* only accepts 
 
 ## License
 
-MIT
+Copyright © 2026 Josiah Lau. All rights reserved. See `LICENSE`. Not licensed for use, copying or modification without permission.
