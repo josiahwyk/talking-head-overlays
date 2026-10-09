@@ -27,31 +27,9 @@ Extra touches:
 - **Small fixes in a new session**: "on Test 3, keep the cart up longer" changes just that overlay and rebuilds in about a minute.
 - **Preferences that stick**: feedback you give while watching a preview is saved to `~/.claude/skill-preferences/talking-head-overlays.md` and applied to every future video.
 
-## Install
+## Access
 
-Requirements: macOS or Linux, Python 3.9+, ffmpeg.
-
-```bash
-brew install ffmpeg                       # or your package manager
-git clone https://github.com/<owner>/talking-head-overlays ~/.claude/skills/talking-head-overlays
-pip install -r ~/.claude/skills/talking-head-overlays/requirements.txt
-```
-
-Or keep the repo elsewhere and symlink it into `~/.claude/skills/`. The first transcription downloads the whisper model (~500 MB).
-
-## Use
-
-In Claude Code:
-
-> Use talking-head-overlays on ~/Videos/episode-12/IMG_0263.MOV with the screenshots in ~/Videos/episode-12/Screenshots
-
-Claude transcribes, shows you the match table, waits for your OK, then builds. Everything lands in `_overlays/` next to the video. When the preview looks right:
-
-> Export the final
-
-### Optional: DaVinci Resolve
-
-Open or create a project first (Project Manager's *Import Project* only accepts `.drp`). Then on the Edit page: **File → Import → Timeline…**, select the `.fcpxml` file, and tick *Automatically import source clips into media pool*. Your video lands on V1 and the overlays on V2.
+This skill is published for viewing only and is not available for public use. To request permission, see [my GitHub profile](https://github.com/josiahwyk) for contact details.
 
 ## Tips
 
@@ -81,4 +59,4 @@ Open or create a project first (Project Manager's *Import Project* only accepts 
 
 ## License
 
-Copyright © 2026 Josiah Lau. All rights reserved. See `LICENSE`. Not licensed for use, copying or modification without permission.
+Copyright © 2026 Josiah Lau. All rights reserved. This repository is published for viewing only. You may not use, copy, modify or distribute it without my written permission. To request permission, see [my GitHub profile](https://github.com/josiahwyk) for contact details. See `LICENSE`.
