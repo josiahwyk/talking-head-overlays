@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.DS_Store
+# built skill bundle - attach to a GitHub release instead of committing
+*.skill
+dist/
+# never commit work folders, footage or personal preferences
+_overlays/
+*.mov
+*.MOV
+*.mp4
