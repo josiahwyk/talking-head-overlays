@@ -2,7 +2,7 @@
 """Transcribe a video with word-level timestamps using faster-whisper.
 
 Outputs (next to --out-dir):
-  words.json      [{"word": str, "start": float, "end": float}, ...]
+  words.json      [{"word": str, "start": float, "end": float, "p": confidence}, ...]
   transcript.txt  one line per segment: "[mm:ss.s] text"  (for Claude to read)
 
 Usage: python transcribe.py VIDEO --out-dir WORKDIR [--model small.en]
@@ -43,7 +43,7 @@ def main():
         lines.append(f"[{fmt(seg.start)}] {seg.text.strip()}")
         for w in seg.words or []:
             words.append({"word": w.word.strip(), "start": round(w.start, 3),
-                          "end": round(w.end, 3)})
+                          "end": round(w.end, 3), "p": round(w.probability, 3)})
 
     with open(os.path.join(a.out_dir, "words.json"), "w") as f:
         json.dump(words, f, indent=1)

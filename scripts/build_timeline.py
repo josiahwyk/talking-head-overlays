@@ -185,14 +185,25 @@ def resolve_timings(cfg, words, base_dir, total):
             print(f"WARNING: {it['src'].name} only {it['end'] - it['start']:.2f}s on screen")
     return items
 
-def write_fcpxml(video, meta, items, path, title):
+def zoom_pattern(segs, zoom):
+    """Punch in on every other piece so jump cuts read as deliberate. A piece under 0.6s keeps
+    the previous framing (a quick in-out flash looks worse than the jump)."""
+    flags, on = [], False
+    for i, g in enumerate(segs):
+        if i and g["out_out"] - g["out_in"] >= 0.6:
+            on = not on
+        flags.append(bool(zoom) and on)
+    return flags
+
+def write_fcpxml(video, meta, items, path, title, edl=None, zoom=None):
     fps, W, H = meta["fps"], meta["width"], meta["height"]
     fd = 1 / fps
     total = t2r(meta["duration"], fps)
+    src_total = t2r(edl["source_duration"], fps) if edl else total
     res = [f'<format id="r1" name="Video" frameDuration="{fd.numerator}/{fd.denominator}s" width="{W}" height="{H}"/>',
            f'<format id="r2" name="FFVideoFormatRateUndefined" width="{W}" height="{H}"/>',
            f'<asset id="r3" name={quoteattr(Path(video).stem)} src={quoteattr(Path(video).resolve().as_uri())} '
-           f'start="0s" duration="{total}" hasVideo="1" format="r1"'
+           f'start="0s" duration="{src_total}" hasVideo="1" format="r1"'
            + (f' hasAudio="1" audioSources="1" audioChannels="{meta["audio_ch"]}" audioRate="48000"' if meta["audio_ch"] else "")
            + "/>"]
     clips = []
@@ -214,6 +225,28 @@ def write_fcpxml(video, meta, items, path, title):
             res.append(f'<asset id="{aid}" name={name} src={quoteattr(it["prepped"].resolve().as_uri())} '
                        f'start="0s" duration="0s" hasVideo="1" format="r2"/>')
             clips.append(f'<video ref="{aid}" lane="1" name={name} offset="{off}" start="0s" duration="{dur}"/>')
+    vname = quoteattr(Path(video).stem)
+    if edl:
+        # clean cut: the kept pieces of the ORIGINAL file, end to end on V1 (drag any edge in Resolve
+        # to bring cut material back); each overlay is connected to the piece it starts in
+        segs, zf = edl["segments"], zoom_pattern(edl["segments"], zoom)
+        kids = [[] for _ in segs]
+        for it, c in zip(items, clips):
+            k = max(j for j, g in enumerate(segs) if g["out_in"] <= it["start"] + 1e-6) if it["start"] >= segs[0]["out_in"] else 0
+            g = segs[k]
+            local = t2r(g["src_in"] + it["start"] - g["out_in"], fps)
+            kids[k].append(re.sub(r'offset="[^"]*"', f'offset="{local}"', c, count=1))
+        spine = []
+        for g, z, kk in zip(segs, zf, kids):
+            inner = ([f'<adjust-transform scale="{zoom} {zoom}"/>'] if z else []) + kk
+            spine.append(f'<asset-clip ref="r3" name={vname} offset="{t2r(g["out_in"], fps)}" start="{t2r(g["src_in"], fps)}" '
+                         f'duration="{t2r(g["out_out"] - g["out_in"], fps)}" tcFormat="NDF">'
+                         + "".join(inner) + "</asset-clip>")
+        spine_xml = "\n            ".join(spine)
+    else:
+        spine_xml = (f'<asset-clip ref="r3" name={vname} offset="0s" start="0s" duration="{total}" tcFormat="NDF">\n'
+                     f'              {chr(10).join("              " + c for c in clips).strip()}\n'
+                     f'            </asset-clip>')
     xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE fcpxml>
 <fcpxml version="1.8">
@@ -225,9 +258,7 @@ def write_fcpxml(video, meta, items, path, title):
       <project name={quoteattr(title)}>
         <sequence format="r1" duration="{total}" tcStart="0s" tcFormat="NDF">
           <spine>
-            <asset-clip ref="r3" name={quoteattr(Path(video).stem)} offset="0s" start="0s" duration="{total}" tcFormat="NDF">
-              {chr(10).join("              " + c for c in clips).strip()}
-            </asset-clip>
+            {spine_xml}
           </spine>
         </sequence>
       </project>
@@ -237,18 +268,35 @@ def write_fcpxml(video, meta, items, path, title):
 '''
     Path(path).write_text(xml)
 
-def render_preview(video, items, out, meta, final=False):
+def render_preview(video, items, out, meta, final=False, edl=None, zoom=None):
     """Burn the overlays in. Default: quick 540p preview for checking timings.
-    final=True: full-resolution, high-quality H.264 + AAC, ready to upload."""
+    final=True: full-resolution, high-quality H.264 + AAC, ready to upload.
+    edl: build the base video from the kept pieces (clean cut); zoom: punch in on every other piece."""
     W, H = meta["width"], meta["height"]
-    args = ["ffmpeg", "-y", "-v", "error", "-i", str(video)]
+    args, chain, last, aout, base = ["ffmpeg", "-y", "-v", "error"], [], "[0:v]", "0:a?", 1
+    if edl:
+        fr = f"{meta['fps'].numerator}/{meta['fps'].denominator}"
+        segs = edl["segments"]
+        for g in segs:
+            args += ["-ss", f"{g['src_in']:.4f}", "-t", f"{g['src_out'] - g['src_in']:.4f}", "-i", str(video)]
+        cw, ch = (int(W / zoom) // 2 * 2, int(H / zoom) // 2 * 2) if zoom else (W, H)
+        for k, (g, z) in enumerate(zip(segs, zoom_pattern(segs, zoom))):
+            d = g["out_out"] - g["out_in"]
+            # exact frame count per piece so picture and sound stay in sync across every cut
+            chain.append(f"[{k}:v]setpts=N/({fr}*TB),tpad=stop_mode=clone:stop=2,trim=end_frame={g['frames']}"
+                         + (f",crop={cw}:{ch},scale={W}:{H}" if z else "") + f",setsar=1[sv{k}]")
+            chain.append(f"[{k}:a]asetpts=PTS-STARTPTS,apad,atrim=end={d:.4f},"  # 10 ms fades: no clicks at cuts
+                         f"afade=t=in:d=0.01,afade=t=out:st={max(0, d - 0.01):.4f}:d=0.01[sa{k}]")
+        chain.append("".join(f"[sv{k}][sa{k}]" for k in range(len(segs))) + f"concat=n={len(segs)}:v=1:a=1[base][aout]")
+        last, aout, base = "[base]", "[aout]", len(segs)
+    else:
+        args += ["-i", str(video)]
     for it in items:
         if it["clip"]:
             args += ["-ss", f"{it['in']:.3f}", "-t", f"{it['end'] - it['start']:.3f}", "-i", str(it["prepped"])]
         else:
             args += ["-i", str(it["prepped"])]
-    chain, last = [], "[0:v]"
-    for i, it in enumerate(items, 1):
+    for i, it in enumerate(items, base):
         src = f"[{i}:v]"
         if it["clip"]:
             src = f"[c{i}]"
@@ -270,18 +318,20 @@ def render_preview(video, items, out, meta, final=False):
     else:
         chain.append(f"{last}scale=-2:540[out]")
         enc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-c:a", "aac"]
-    args += ["-filter_complex", ";".join(chain), "-map", "[out]", "-map", "0:a?"] + enc + [str(out)]
+    args += ["-filter_complex", ";".join(chain), "-map", "[out]", "-map", aout] + enc + [str(out)]
     subprocess.run(args, check=True)
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--video", required=True)
-    p.add_argument("--overlays", required=True)
+    p.add_argument("--overlays", help="overlays.json (optional with --edl: clean cut only)")
     p.add_argument("--words")
     p.add_argument("--out-dir", required=True)
     p.add_argument("--title")
     p.add_argument("--preview", action="store_true")
     p.add_argument("--final", action="store_true", help="also render the full-quality video to post")
+    p.add_argument("--edl", help="clean-cut edl.json from clean_cut.py apply (use --words words_cut.json)")
+    p.add_argument("--zoom", type=float, help="with --edl: punch in this much (e.g. 1.1) on every other piece")
     a = p.parse_args()
 
     out = Path(a.out_dir); (out / "overlays_prepped").mkdir(parents=True, exist_ok=True)
@@ -289,9 +339,19 @@ def main():
         if stale.is_file():
             stale.unlink()
     meta = probe(a.video)
-    cfg = json.load(open(a.overlays))
+    edl = json.load(open(a.edl)) if a.edl else None
+    if a.zoom and not edl:
+        sys.exit("--zoom needs --edl (it hides the jump cuts of a clean cut)")
+    if edl:
+        if Path(edl["video"]).resolve() != Path(a.video).resolve():
+            sys.exit(f"edl.json was made for {edl['video']}")
+        meta["duration"] = edl["duration"]  # overlays are timed on the edited video
+    if not a.overlays and not edl:
+        sys.exit("--overlays is required (unless building a clean cut with --edl)")
+    name = Path(a.video).stem + ("_clean" if edl else "") + ("_zoom" if a.zoom else "")
+    cfg = json.load(open(a.overlays)) if a.overlays else {"overlays": []}
     words = json.load(open(a.words)) if a.words else None
-    items = resolve_timings(cfg, words, Path(a.overlays).resolve().parent, meta["duration"])
+    items = resolve_timings(cfg, words, Path(a.overlays or ".").resolve().parent, meta["duration"])
 
     for i, it in enumerate(items, 1):
         stem = re.sub(r"^\d+_", "", it["src"].stem)  # staged copies already carry a number
@@ -302,11 +362,13 @@ def main():
         else:
             prep_image(it["src"], it["prepped"], meta["width"], meta["height"], it["scale"])
 
-    title = a.title or f"{Path(a.video).stem} overlays"
-    xml_path = out / f"{Path(a.video).stem}_overlays.fcpxml"
-    write_fcpxml(a.video, meta, items, xml_path, title)
+    title = a.title or f"{name} overlays"
+    xml_path = out / f"{name}_overlays.fcpxml"
+    write_fcpxml(a.video, meta, items, xml_path, title, edl, a.zoom)
 
-    print(f"Video: {meta['width']}x{meta['height']} @ {float(meta['fps']):.3f}fps, {meta['duration']:.1f}s")
+    print(f"Video: {meta['width']}x{meta['height']} @ {float(meta['fps']):.3f}fps, {meta['duration']:.1f}s"
+          + (f" (clean cut: {len(edl['segments'])} pieces of {edl['source_duration']:.1f}s"
+             + (f", zoom {a.zoom}x on alternate pieces" if a.zoom else "") + ")" if edl else ""))
     print(f"{'#':>2}  {'start':>8}  {'end':>8}  conf  file [clip window]  <- phrase")
     for i, it in enumerate(items, 1):
         c = f"{it['score']:.2f}" if it["score"] is not None else "  - "
@@ -317,12 +379,12 @@ def main():
         print("WARNING: this video was recorded in HDR (iPhone 'HDR Video' on). Previews/exports will look "
               "brighter than on the phone. Turn off Settings > Camera > Record Video > HDR Video for future recordings.")
     if a.final:
-        fv = str(out / f"{Path(a.video).stem}_final.mp4")
-        render_preview(a.video, items, fv, meta, final=True)
+        fv = str(out / f"{name}_final.mp4")
+        render_preview(a.video, items, fv, meta, final=True, edl=edl, zoom=a.zoom)
         print(f"Final:    {fv}")
     if a.preview:
-        pv = str(out / f"{Path(a.video).stem}_preview.mp4")
-        render_preview(a.video, items, pv, meta)
+        pv = str(out / f"{name}_preview.mp4")
+        render_preview(a.video, items, pv, meta, edl=edl, zoom=a.zoom)
         print(f"Preview:  {pv}")
 
 if __name__ == "__main__":
