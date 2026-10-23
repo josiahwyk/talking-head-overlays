@@ -36,6 +36,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 from find_phrase import search, norm
+import layout
+
+STYLE_FILE = "~/.claude/skill-preferences/talking-head-overlays-style.json"
 
 VIDEO_EXT = {".mov", ".mp4", ".m4v", ".mkv", ".webm", ".avi"}
 
@@ -237,29 +240,55 @@ def write_fcpxml(video, meta, items, path, title):
 '''
     Path(path).write_text(xml)
 
-def render_preview(video, items, out, meta, final=False):
+def render_preview(video, items, out, meta, final=False, style=None, geo=None, captions=None, spans=None):
     """Burn the overlays in. Default: quick 540p preview for checking timings.
-    final=True: full-resolution, high-quality H.264 + AAC, ready to upload."""
+    final=True: full-resolution, high-quality H.264 + AAC, ready to upload.
+    style["layout"] == "split": visuals beside the speaker instead of over them (geo from layout.geometry).
+    captions: ffconcat list of caption images from layout.build_captions."""
     W, H = meta["width"], meta["height"]
+    split = bool(style and layout.layout_for(style, W, H) == "split")
     args = ["ffmpeg", "-y", "-v", "error", "-i", str(video)]
     for it in items:
         if it["clip"]:
             args += ["-ss", f"{it['in']:.3f}", "-t", f"{it['end'] - it['start']:.3f}", "-i", str(it["prepped"])]
         else:
-            args += ["-i", str(it["prepped"])]
+            args += ["-i", str(it.get("split_prepped", it["prepped"]) if split else it["prepped"])]
     chain, last = [], "[0:v]"
+    if split:
+        # the split frame: background colour + the speaker cropped (not scaled) into their area
+        fr = f"{meta['fps'].numerator}/{meta['fps'].denominator}"
+        cw, ch, cx, cy = geo["crop"]
+        sx, sy = geo["speaker"][:2]
+        chain.append("[0:v]split=2[full][src]")
+        chain.append(f"[src]crop={cw}:{ch}:{cx}:{cy}[me]")
+        chain.append(f"color=c=0x{style['background'].lstrip('#')[:6]}:s={W}x{H}:r={fr}:d={meta['duration']:.3f}[bg]")
+        chain.append(f"[bg][me]overlay={sx}:{sy}:shortest=1[sb]")
+        last = "[sb]"
+        vx, vy, vw, vh = geo["visual"]
+        m = int(style["margin"] * min(W, H) / 1080)
     for i, it in enumerate(items, 1):
         src = f"[{i}:v]"
         if it["clip"]:
             src = f"[c{i}]"
-            chain.append(f"[{i}:v]scale={int(W * it['scale'])}:{int(H * it['scale'])}:force_original_aspect_ratio=decrease,"
+            bw, bh = (vw - 2 * m, vh - 2 * m) if split else (int(W * it["scale"]), int(H * it["scale"]))
+            chain.append(f"[{i}:v]scale={bw}:{bh}:force_original_aspect_ratio=decrease,"
                          f"setpts=PTS-STARTPTS+{it['start']:.3f}/TB{src}")
-            pos = "(W-w)/2:(H-h)/2:eof_action=pass"
+            # a held clip freezes on its last frame until the next visual
+            pos = (f"{vx}+({vw}-w)/2:{vy}+({vh}-h)/2" if split else "(W-w)/2:(H-h)/2") + \
+                  (":eof_action=repeat" if "show_end" in it else ":eof_action=pass")
         else:
-            pos = "0:0"
+            pos = f"{vx}:{vy}" if split else "0:0"
         tag = f"[v{i}]"
-        chain.append(f"{last}{src}overlay={pos}:enable='between(t,{it['start']:.3f},{it['end']:.3f})'{tag}")
+        chain.append(f"{last}{src}overlay={pos}:enable='between(t,{it['start']:.3f},{it.get('show_end', it['end']):.3f})'{tag}")
         last = tag
+    if split:  # split frame during the split spans; full-frame speaker otherwise
+        on = "+".join(f"between(t,{a:.3f},{b:.3f})" for a, b in spans) or "0"
+        chain.append(f"[full]{last}overlay=0:0:enable='{on}'[lay]")
+        last = "[lay]"
+    if captions:
+        args += ["-f", "concat", "-safe", "0", "-i", str(captions)]
+        chain.append(f"{last}[{len(items) + 1}:v]overlay=0:0:eof_action=pass[cap]")
+        last = "[cap]"
     if final:
         chain.append(f"{last}format=yuv420p[out]")
         enc = ["-c:v", "libx264", "-preset", "slow", "-crf", "18", "-pix_fmt", "yuv420p",
@@ -282,6 +311,7 @@ def main():
     p.add_argument("--title")
     p.add_argument("--preview", action="store_true")
     p.add_argument("--final", action="store_true", help="also render the full-quality video to post")
+    p.add_argument("--style", default=STYLE_FILE, help="style JSON (layout, background, captions); 'none' = original look")
     a = p.parse_args()
 
     out = Path(a.out_dir); (out / "overlays_prepped").mkdir(parents=True, exist_ok=True)
@@ -292,6 +322,21 @@ def main():
     cfg = json.load(open(a.overlays))
     words = json.load(open(a.words)) if a.words else None
     items = resolve_timings(cfg, words, Path(a.overlays).resolve().parent, meta["duration"])
+    style = layout.load_style(None if a.style == "none" else a.style, cfg.get("style"))
+    split = layout.layout_for(style, meta["width"], meta["height"]) == "split"
+    geo = layout.geometry(meta["width"], meta["height"], style) if split else None
+    spans = layout.split_spans(items, style, meta["duration"], cfg.get("split_spans"), meta["width"], meta["height"]) if split else []
+    if cfg.get("intro_title"):
+        if not split:
+            print("NOTE: intro_title is only used with the split layout; skipped")
+        else:  # title card in the visual area until the first visual is mentioned
+            tpng = out / "intro_title.png"
+            layout.title_card(cfg["intro_title"], tpng, geo["visual"], style, min(meta["width"], meta["height"]) / 1080)
+            first = items[0]["start"] if items else meta["duration"]
+            items.insert(0, {"src": tpng, "clip": False, "start": 0.0, "end": first, "phrase": "(intro title)",
+                             "duration": first, "score": None, "scale": 1.0, "gap": 0.0})
+    if split:
+        layout.hold_visuals(items, spans, meta["width"], meta["height"], style)
 
     for i, it in enumerate(items, 1):
         stem = re.sub(r"^\d+_", "", it["src"].stem)  # staged copies already carry a number
@@ -301,6 +346,10 @@ def main():
             prep_clip(it["src"], it["prepped"])
         else:
             prep_image(it["src"], it["prepped"], meta["width"], meta["height"], it["scale"])
+            if split:  # the MP4 uses a version sized for the visual's area; Resolve keeps the full-frame one
+                it["split_prepped"] = it["prepped"].with_name(it["prepped"].stem + "_split.png")
+                layout.prep_split_image(it["src"], it["split_prepped"], geo["visual"], style,
+                                        min(meta["width"], meta["height"]) / 1080)
 
     title = a.title or f"{Path(a.video).stem} overlays"
     xml_path = out / f"{Path(a.video).stem}_overlays.fcpxml"
@@ -313,16 +362,28 @@ def main():
         win = f" [clip {it['in']:.1f}-{it['in'] + it['end'] - it['start']:.1f}s]" if it["clip"] else ""
         print(f"{i:>2}  {it['start']:8.2f}  {it['end']:8.2f}  {c}  {it['src'].name}{win}  <- {it['phrase']}")
     print(f"\nTimeline: {xml_path}")
+    caps = None
+    if style["captions"]["enabled"]:
+        if words is None:
+            sys.exit("Captions need --words")
+        cw = layout.apply_fixes(words, cfg.get("caption_fixes"))
+        caps, entries = layout.build_captions(cw, meta["width"], meta["height"], style, spans, geo, out, meta["duration"])
+        srt = out / f"{Path(a.video).stem}.srt"
+        layout.write_srt(cw, style, srt)
+        print(f"Captions: {len(entries)} caption images; plain captions file {srt}")
+    if split or caps:
+        print("NOTE: the split layout and captions are in the MP4 only; the Resolve timeline keeps the "
+              "original centred overlays (use the .srt for captions in Resolve or YouTube).")
     if meta["hdr"]:
         print("WARNING: this video was recorded in HDR (iPhone 'HDR Video' on). Previews/exports will look "
               "brighter than on the phone. Turn off Settings > Camera > Record Video > HDR Video for future recordings.")
     if a.final:
         fv = str(out / f"{Path(a.video).stem}_final.mp4")
-        render_preview(a.video, items, fv, meta, final=True)
+        render_preview(a.video, items, fv, meta, final=True, style=style, geo=geo, captions=caps, spans=spans)
         print(f"Final:    {fv}")
     if a.preview:
         pv = str(out / f"{Path(a.video).stem}_preview.mp4")
-        render_preview(a.video, items, pv, meta)
+        render_preview(a.video, items, pv, meta, style=style, geo=geo, captions=caps, spans=spans)
         print(f"Preview:  {pv}")
 
 if __name__ == "__main__":

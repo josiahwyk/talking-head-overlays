@@ -24,8 +24,18 @@ Extra touches:
 - **Several screenshots for one sentence** (e.g. four order receipts) stack into a list that builds up item by item, each one on the word that names it, instead of flickering past.
 - **Each visual is used once**, at first mention. Repeat mentions go on the "worth sourcing" list instead of reusing images.
 - Clip audio is always dropped so it never competes with your voice.
+- **Optional colour and audio fix**: corrects yellow/warm room lighting by measuring your walls and other white or grey things in the shot, and cleans up your voice (rumble, hiss, uneven volume, loudness set for YouTube/Instagram). You get a before/after still and clip to compare.
 - **Small fixes in a new session**: "on Test 3, keep the cart up longer" changes just that overlay and rebuilds in about a minute.
 - **Preferences that stick**: feedback you give while watching a preview is saved to `~/.claude/skill-preferences/talking-head-overlays.md` and applied to every future video.
+
+## Split layout and captions
+
+Optional, set once in a style file (`style.example.json` shows every setting):
+
+- **Split layout:** while a screenshot is up, it sits beside you instead of over your face. On vertical video it goes on top with you below; on horizontal it goes on the left with you on the right. You're cropped, never zoomed, and between screenshots you're full frame.
+- **Captions:** your words, a few at a time, burned into the video. You choose the font, size, colour, outline or box, and highlight colour for the spoken word, plus a fix list for misheard names. An `.srt` file comes too, for YouTube or Resolve.
+- **Background colour** behind the screenshot, and optional borders.
+- **Intro title card** (vertical split): a hook line shown in the screenshot area until the first screenshot appears.
 
 ## Access
 
@@ -33,7 +43,7 @@ This skill is published for viewing only and is not available for public use. To
 
 ## Tips
 
-- **iPhone users: turn off HDR video** (Settings → Camera → Record Video → HDR Video). HDR footage looks brighter in editors and exports than on the phone. The skill warns you if a video is HDR.
+- **iPhone users: turn off HDR video** (Settings → Camera → Record Video → HDR Video). HDR footage looks brighter in editors and exports than on the phone. On a Mac the skill can convert an HDR video with Apple's own converter (`avconvert`) so it looks like it did on the phone.
 - Descriptive screenshot names help matching, but aren't required.
 - Text-heavy screenshots (chats, articles) are given longer on screen so they can be read.
 
@@ -46,15 +56,17 @@ This skill is published for viewing only and is not available for public use. To
 | `clip_frames.py` | Timestamped contact sheet of a video clip |
 | `stage_screenshots.py` | Copy visuals into the work folder with numbered, descriptive names |
 | `stack_images.py` | Build-up stack of several screenshots |
+| `layout.py` | Split layout and captions (used by `build_timeline.py`) |
 | `build_timeline.py` | Timing, FCPXML, prepped overlays, preview and final render |
 
 `SKILL.md` has the full workflow Claude follows and the `overlays.json` format.
 
 ## Known limitations
 
-- Overlays are centred, so on horizontal video they can cover your face. There's no position option yet.
+- Without the split layout, overlays are centred and can cover your face.
+- The split layout and captions are only in the MP4, not in the Resolve timeline.
 - Whisper can mishear product names. Matching is fuzzy, and you can switch to `--model medium.en`.
-- HDR footage isn't converted to SDR.
+- HDR conversion uses `avconvert`, so it's macOS only.
 - One video file per run. Assembling the best takes from multiple recordings isn't supported yet.
 
 ## License

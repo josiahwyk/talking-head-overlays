@@ -20,6 +20,14 @@ The first transcription downloads the whisper model (~500 MB for small.en). Pill
 ## 1. Gather inputs
 
 - **Preferences:** read `~/.claude/skill-preferences/talking-head-overlays.md` if it exists and follow it. Whenever the user gives timing/look feedback while watching a preview, append it there as a dated one-line rule (create the file if missing). Never put personal preferences in this skill folder.
+- **Style:** `~/.claude/skill-preferences/talking-head-overlays-style.json` (layout, background colour, captions, frames) is picked up automatically by `build_timeline.py`. If it's missing, overlays are centred over the speaker with no captions (the original look). `style.example.json` in this folder documents every setting; when the user asks for a look change ("bigger captions", "yellow highlight"), edit their style file.
+- **HDR check (macOS):** `ffprobe -v error -select_streams v:0 -show_entries stream=color_transfer -of csv=p=0 VIDEO`. `arib-std-b67` or `smpte2084` means HDR. Convert a copy with Apple's own tone mapping, which matches the phone. Don't use hand-rolled ffmpeg maths; it looked filtered in testing:
+  `avconvert -s VIDEO -p Preset1920x1080 -o WORKDIR/<name>_sdr.mp4` (works for vertical too; use `Preset3840x2160` for 4K). Use the `_sdr` copy as `--video` from then on. Timing is unchanged.
+- **Colour and audio fix (if the user wants it, or their preferences say so):** fixes warm/yellow room light and cleans up the voice in one step. Run it after the HDR step, on the `_sdr` copy if there is one:
+  `python scripts/fix_video.py VIDEO --out-dir WORKDIR` → `<name>_fixed.mp4`, plus `<name>_compare.jpg` (before on top, after below) and `<name>_before_after.mp4` (the same 8 seconds twice). Look at the compare image and send both to the user. Use the `_fixed` copy as `--video` from then on; timing is unchanged, so an existing `words.json` still works.
+  - Colour: finds walls, blinds and white/grey clothes, measures how yellow the light made them, and corrects the whole video by that amount. `--strength 0.8` (default) keeps a little warmth so skin doesn't look cold. Use 1.0 for fully neutral. It applies one correction to the whole video, so it can't fix colour that drifted during recording (camera white balance on auto). Daylight footage barely changes.
+  - Audio: rumble cut, gentle hiss reduction, light compression, loudness to -14 LUFS. It can't fix distorted (clipped) audio or room echo. `--no-colour` / `--no-audio` skip either part.
+  - Takes ~4 minutes for a 3-minute 1080p video.
 - **Video path:** if the user didn't give one, **ask for the location** before doing anything else. Don't guess or pick a video unless they describe which one (e.g. "my newest video in X folder" — then resolve it and confirm the filename in your reply).
 - **Screenshots folder:** ask if not given and not obvious (e.g. a `Screenshots` folder beside the video's folder).
 - Use a work folder next to the video: `<video_dir>/_overlays/`.
@@ -54,7 +62,8 @@ Produces `words.json` (word timestamps) and `transcript.txt` (timestamped lines)
 | # | Visual | Appears at | Phrase (**trigger** in bold) | Leaves after | Clip window | Why |
 |---|---|---|---|---|---|---|
 
-Flag any file with no clear match and any match you're unsure of. Then list **Visuals worth sourcing**: repeat mentions and long stretches (~15s+) with nothing on screen. Wait for their OK or corrections.
+Flag any file with no clear match and any match you're unsure of. Then list **Visuals worth sourcing**: repeat mentions and long stretches (~15s+) with nothing on screen.
+   **Vertical video with the split layout:** each visual holds until the next, so one screenshot can sit through unrelated talk. Add a **Holds** column (how long each stays up) and list every hold over ~10s, or any hold across a topic change, under Visuals worth sourcing, with what a new screenshot could show. Vertical videos need more screenshots than horizontal ones. Wait for their OK or corrections.
 
 10. After approval, copy the visuals into the work folder with descriptive names, numbered in timeline order (e.g. `01_stripe-revenue-dashboard.png`). Write `WORKDIR/names.json` (`[{"src": ..., "name": "stripe-revenue-dashboard"}, ...]`, short kebab-case names describing what each shows) and run:
     ```bash
@@ -90,9 +99,20 @@ Flag any file with no clear match and any match you're unsure of. Then list **Vi
 python scripts/build_timeline.py --video VIDEO --overlays WORKDIR/overlays.json \
   --words WORKDIR/words.json --out-dir WORKDIR --preview
 ```
-Outputs `<name>_overlays.fcpxml`, `overlays_prepped/` (screenshots fitted onto transparent frame-size PNGs; clips as silent full-length stream copies), and a 540p `<name>_preview.mp4`. Report the printed timing table and any WARNING lines. If it warns the video is **HDR** (iPhone "HDR Video" on), tell the user exports will look brighter than on their phone and to turn off **Settings → Camera → Record Video → HDR Video** for future recordings.
+Outputs `<name>_overlays.fcpxml`, `overlays_prepped/` (screenshots fitted onto transparent frame-size PNGs; clips as silent full-length stream copies), and a 540p `<name>_preview.mp4`. Report the printed timing table and any WARNING lines. With captions on it also writes `<name>.srt` and a `captions/` folder. If it warns the video is **HDR** (iPhone "HDR Video" on), tell the user exports will look brighter than on their phone and to turn off **Settings → Camera → Record Video → HDR Video** for future recordings.
 
 **Final export (to post without Resolve):** once the user is happy with the preview, rebuild with `--final` instead of `--preview`. It writes `<name>_final.mp4`: full resolution, H.264 (CRF 18) + AAC 192k, upload-ready, colours matching the source for standard (SDR) video. A 2.5-min vertical video takes ~3 min to render and is ~200 MB.
+
+### Split layout and captions (from the style file)
+- **Layout per orientation:** `"layout": {"vertical": "split", "horizontal": "center"}` (a single string applies to both). Horizontal split was tried and felt more complicated than the simple centred overlay, so horizontal defaults to centred.
+- **Split layout** (`"split"`): while a visual is up, the frame becomes the background colour, with the visual in one area and the speaker cropped (never zoomed) into the other. Vertical video puts the visual on top and the speaker below; horizontal puts the visual left and the speaker right. Switching layouts in and out on every visual looked jarring. `split_mode` (string, or per orientation) can be: `"always"` (the whole video in split; the user's choice for vertical), `"continuous"` (split from the first visual to the last, with the intro and outro full frame; a backup option, and its transitions felt natural), or `"visual"` (switches per visual; not recommended). For exact chapters, set `"split_spans": [[start, end], ...]` in overlays.json. `"fill_gaps"` decides the visual area between visuals: `"hold"` keeps each visual up until the next replaces it (default on vertical, where a blank top half looked awkward); `"empty"` leaves it blank. This changes only the MP4; appearance times stay as approved.
+- **Face position:** before building, grab 3 frames with a grid (`ffmpeg -i VIDEO -vf "select='eq(n\,300)+eq(n\,1500)+eq(n\,3000)',scale=270:-2,drawgrid=w=27:h=48:t=1:c=red@0.4,tile=3x1" -frames:v 1 -fps_mode passthrough WORKDIR/faces.jpg`), look at it, and set the face centre in overlays.json: `"style": {"face": {"x": 0.47, "y": 0.47}}` (fractions of width and height). This decides what part of the speaker shows in the split.
+- **Captions** come from the transcript, a few words at a time. Read `transcript.txt` for misheard names and add fixes to overlays.json, e.g. `"caption_fixes": {"key studio": "Keyestudio", "81 sensor kit": "48-in-1 sensor kit"}`. They also apply to the `.srt`. List any line you can't confidently fix so the user can tell you what they said.
+- **Intro on vertical videos (decide per video, ask the user):** with the split on for the whole video, the visual area is empty until the first visual is mentioned. Offer two options in the match table:
+  - **Title card:** `"intro_title": "I built a Tamagotchi of my cats"` in overlays.json. Big text in the caption font, shown until the first visual (colour and size under `style.title`). Suggest a hook-style line based on the opening.
+  - **Opening screenshot:** a visual that matches the first thing said, with `"start": 0` so it's up from the first frame (its `until`/hold works as normal).
+- Any style setting can be overridden for one video under `"style"` in its overlays.json.
+- The Resolve timeline keeps the original centred overlays; the split layout and burned-in captions are only in the MP4 (the `.srt` can be imported into Resolve or uploaded to YouTube).
 
 ## 4b. Small edits to an existing video (new session)
 
@@ -111,9 +131,11 @@ If the user names a video that already has a `_overlays/` work folder ("on Test 
 
 ## Known limitations
 
-- Overlays are centred, so on horizontal video they can cover the speaker's face (no position option yet).
+- Without the split layout, overlays are centred and can cover the speaker's face.
+- Split layout: tall or text-heavy screenshots get small in the top area of a vertical video. Crop them or give them longer on screen.
+- The split layout and captions aren't in the Resolve timeline (MP4 only); captions come as an `.srt`.
 - Whisper mishears product names ("8-in-1" for "48-in-1"); fuzzy matching usually still lands, else use `start` or `--model medium.en`.
 - From a contact sheet Claude can tell what's happening in a clip, but not subtle on-screen detail (e.g. which small animation is playing).
-- HDR recordings aren't converted to SDR; record with HDR off.
+- HDR recordings need the `avconvert` step (macOS only); recording with HDR off is still best.
 - Clip scaling in the FCPXML uses `adjust-transform`; confirm the clip size in Resolve's Inspector.
 - One video file per run; combining multiple takes isn't supported yet.

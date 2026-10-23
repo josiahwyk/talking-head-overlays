@@ -1,0 +1,33 @@
+{
+  "_about": "Copy to ~/.claude/skill-preferences/talking-head-overlays-style.json and edit. Any key left out uses the default shown here. A video's overlays.json can override any of these under \"style\".",
+
+  "layout": {"vertical": "split", "horizontal": "center"},
+  "split_mode": {"vertical": "always", "horizontal": "continuous"},
+  "background": "#E4D5BE",
+  "split": {"vertical": 0.44, "horizontal": 0.5},
+  "fill_gaps": {"vertical": "hold", "horizontal": "empty"},
+  "margin": 48,
+  "corner_radius": 24,
+  "frame": {"enabled": false, "color": "#C8553D", "width": 8, "padding": 24},
+  "face": {"x": 0.5, "y": 0.42},
+  "title": {"color": "#1F1F1F", "size": 84},
+
+  "captions": {
+    "enabled": true,
+    "font": "/System/Library/Fonts/Avenir Next.ttc",
+    "font_index": 8,
+    "size": 64,
+    "color": "#FFFFFF",
+    "outline": "#000000",
+    "outline_width": 5,
+    "box": null,
+    "highlight": null,
+    "max_words": 4,
+    "max_chars": 26,
+    "uppercase": false,
+    "y_full": 0.72,
+    "y_full_horizontal": 0.9,
+    "y_split_vertical": null,
+    "y_split_horizontal": 0.9
+  }
+}
